@@ -4,6 +4,13 @@
 This project is a toy to show how different deep-learning feature matching methods affect the performance of visual-inertial odometry.
 
 
+## ---
+### 1. LK optical flow
+[![tracking results of lk](doc/lk.gif)](doc/lk.gif)
+
+### 2. [SuperPoint]() + [SuperGlue]()
+
+
 ## Quick Start
 
 ### 1. Clone the repository
