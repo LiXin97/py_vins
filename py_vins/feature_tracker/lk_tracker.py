@@ -12,10 +12,281 @@ import numpy as np
 import cv2
 
 
-class XinOpticalFlowPyrLK(object):
+def valid_point(image, x, y) -> bool:
+    if x < 0 or x >= image.shape[1] or y < 0 or y >= image.shape[0]:
+        return False
+    return True
+
+
+def get_pixel_value(image, x, y) -> float:
+    if valid_point(image, x, y):
+        return float(image[int(y), int(x)])
+    return 0.0
+
+
+# TODO [XIN] : Check jacobian
+class XinOpticalFlowPyrLKLSSD(object):
     def __init__(self):
         self.win_size = (11, 11)
         self.max_level = 2
+        self.criteria = (
+            cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+            100,
+            0.01,
+        )
+
+    def __call__(
+        self,
+        last_image: np.ndarray,
+        current_image: np.ndarray,
+        last_image_keypoints: np.ndarray,
+        current_image_keypoints: np.ndarray,
+        win_size: tuple = None,
+        max_level: int = None,
+    ):
+        if win_size is None:
+            win_size = self.win_size
+        if max_level is None:
+            max_level = self.max_level
+
+        image_set_pyramid = []
+        for i in range(max_level):
+            image_set_pyramid.append(
+                [
+                    cv2.resize(last_image, (0, 0), fx=1 / (2**i), fy=1 / (2**i)),
+                    cv2.resize(current_image, (0, 0), fx=1 / (2**i), fy=1 / (2**i)),
+                    (2**i),
+                ]
+            )
+
+        image_set_pyramid = image_set_pyramid[::-1]
+
+        tracked_keypoints = []
+        tracked_status = []
+
+        for last_image_keypoint in last_image_keypoints:
+            cur_tracked_keypoint = last_image_keypoint
+            status = True
+            if current_image_keypoints is not None:
+                cur_tracked_keypoint = current_image_keypoints[0]
+
+            for image_set in image_set_pyramid:
+                if status is False:
+                    break
+                last_image_pyramid = image_set[0]
+                current_image_pyramid = image_set[1]
+                cur_pyramid_level = image_set[2]
+
+                half_win_size = (win_size[0] // 2, win_size[1] // 2)
+
+                last_cost = 1e10
+                for _ in range(100):
+                    last_image_keypoint_pyramid = (
+                        last_image_keypoint / cur_pyramid_level
+                    )
+                    cur_tracked_keypoint_pyramid = (
+                        cur_tracked_keypoint / cur_pyramid_level
+                    )
+                    cur_point_move_pyrmid = (
+                        cur_tracked_keypoint_pyramid - last_image_keypoint_pyramid
+                    )
+                    H = np.zeros((2, 2))
+                    b = np.zeros((2, 1))
+                    J = np.zeros((2, 1))
+                    cost = 0
+                    last_sum = 0.0
+                    cur_sum = 0.0
+                    num_valid_points = 0
+                    grad_sum = np.zeros((2, 1))
+                    for i in range(-half_win_size[0], half_win_size[0]):
+                        for j in range(-half_win_size[1], half_win_size[1]):
+                            if not valid_point(
+                                last_image_pyramid,
+                                last_image_keypoint_pyramid[0] + j,
+                                last_image_keypoint_pyramid[1] + i,
+                            ):
+                                continue
+                            if not valid_point(
+                                current_image_pyramid,
+                                last_image_keypoint_pyramid[0]
+                                + j
+                                + cur_point_move_pyrmid[0],
+                                last_image_keypoint_pyramid[1]
+                                + i
+                                + cur_point_move_pyrmid[1],
+                            ):
+                                continue
+                            num_valid_points += 1
+                            last_sum += get_pixel_value(
+                                last_image_pyramid,
+                                last_image_keypoint_pyramid[0] + j,
+                                last_image_keypoint_pyramid[1] + i,
+                            )
+                            cur_sum += get_pixel_value(
+                                current_image_pyramid,
+                                last_image_keypoint_pyramid[0]
+                                + j
+                                + cur_point_move_pyrmid[0],
+                                last_image_keypoint_pyramid[1]
+                                + i
+                                + cur_point_move_pyrmid[1],
+                            )
+
+                            grad_cur = np.array(
+                                [
+                                    [
+                                        (
+                                            get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j + 1,
+                                                last_image_keypoint_pyramid[1] + i,
+                                            )
+                                            - get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j - 1,
+                                                last_image_keypoint_pyramid[1] + i,
+                                            )
+                                        )
+                                        / 2,
+                                        (
+                                            get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j,
+                                                last_image_keypoint_pyramid[1] + i + 1,
+                                            )
+                                            - get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j,
+                                                last_image_keypoint_pyramid[1] + i - 1,
+                                            )
+                                        )
+                                        / 2,
+                                    ]
+                                ]
+                            )
+                            grad_sum += grad_cur.T
+
+                    last_mean = last_sum / num_valid_points
+                    cur_mean = cur_sum / num_valid_points
+                    for i in range(-half_win_size[0], half_win_size[0]):
+                        for j in range(-half_win_size[1], half_win_size[1]):
+                            error = (
+                                get_pixel_value(
+                                    last_image_pyramid,
+                                    last_image_keypoint_pyramid[0] + j,
+                                    last_image_keypoint_pyramid[1] + i,
+                                )
+                                / last_mean
+                                - get_pixel_value(
+                                    current_image_pyramid,
+                                    last_image_keypoint_pyramid[0]
+                                    + j
+                                    + cur_point_move_pyrmid[0],
+                                    last_image_keypoint_pyramid[1]
+                                    + i
+                                    + cur_point_move_pyrmid[1],
+                                )
+                                / cur_mean
+                            )
+
+                            grad_cur = np.array(
+                                [
+                                    [
+                                        (
+                                            get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j + 1,
+                                                last_image_keypoint_pyramid[1] + i,
+                                            )
+                                            - get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j - 1,
+                                                last_image_keypoint_pyramid[1] + i,
+                                            )
+                                        )
+                                        / 2,
+                                        (
+                                            get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j,
+                                                last_image_keypoint_pyramid[1] + i + 1,
+                                            )
+                                            - get_pixel_value(
+                                                current_image_pyramid,
+                                                last_image_keypoint_pyramid[0] + j,
+                                                last_image_keypoint_pyramid[1] + i - 1,
+                                            )
+                                        )
+                                        / 2,
+                                    ]
+                                ]
+                            )
+
+                            J = (
+                                num_valid_points
+                                * (
+                                    grad_cur * cur_mean * num_valid_points
+                                    - grad_sum
+                                    * get_pixel_value(
+                                        current_image_pyramid,
+                                        last_image_keypoint_pyramid[0]
+                                        + j
+                                        + cur_point_move_pyrmid[0],
+                                        last_image_keypoint_pyramid[1]
+                                        + i
+                                        + cur_point_move_pyrmid[1],
+                                    )
+                                    / last_mean
+                                )
+                                / (num_valid_points**2 * last_mean * cur_mean)
+                            )
+
+                            b = b - J.T * error
+                            cost = cost + float(error) ** 2
+                            H = H + J.T @ J
+
+                    # update = inv(H) @ b
+                    # using ldlt decomposition
+                    # np.linalg.cholesky(H)
+
+                    if cost > last_cost:
+                        break
+                    last_cost = cost
+
+                    if np.linalg.det(H) == 0:
+                        status = False
+                        break
+                    update = np.linalg.inv(H) @ b
+
+                    cur_tracked_keypoint_pyramid = (
+                        cur_tracked_keypoint_pyramid + update.transpose()
+                    )
+
+                    cur_tracked_keypoint = (
+                        cur_tracked_keypoint_pyramid * cur_pyramid_level
+                    )[0]
+
+                    if (
+                        cur_tracked_keypoint[0] < 0
+                        or cur_tracked_keypoint[0] >= current_image.shape[1]
+                        or cur_tracked_keypoint[1] < 0
+                        or cur_tracked_keypoint[1] >= current_image.shape[0]
+                    ):
+                        status = False
+                        break
+
+                    if np.linalg.norm(update) < 0.1:
+                        break
+            tracked_keypoints.append(cur_tracked_keypoint)
+            tracked_status.append(status)
+
+        return tracked_keypoints, tracked_status
+
+
+class XinOpticalFlowPyrLK(object):
+    def __init__(self):
+        self.win_size = (21, 21)
+        self.max_level = 4
         self.criteria = (
             cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
             100,
@@ -67,6 +338,62 @@ class XinOpticalFlowPyrLK(object):
                 half_win_size = (win_size[0] // 2, win_size[1] // 2)
 
                 last_cost = 1e10
+
+                H = np.zeros((2, 2))
+                b = np.zeros((2, 1))
+                J = np.zeros((2, 1))
+                J_list = []
+
+                last_image_keypoint_pyramid = last_image_keypoint / cur_pyramid_level
+
+                valid_points = 0
+                for i in range(-half_win_size[0], half_win_size[0]):
+                    for j in range(-half_win_size[1], half_win_size[1]):
+                        if not valid_point(
+                            last_image_pyramid,
+                            last_image_keypoint_pyramid[0] + j,
+                            last_image_keypoint_pyramid[1] + i,
+                        ):
+                            J_list.append(np.zeros((2, 1)))
+                            continue
+                        valid_points += 1
+                        J = -1 * np.array(
+                            [
+                                [
+                                    (
+                                        get_pixel_value(
+                                            last_image_pyramid,
+                                            last_image_keypoint_pyramid[0] + j + 1,
+                                            last_image_keypoint_pyramid[1] + i,
+                                        )
+                                        - get_pixel_value(
+                                            last_image_pyramid,
+                                            last_image_keypoint_pyramid[0] + j - 1,
+                                            last_image_keypoint_pyramid[1] + i,
+                                        )
+                                    )
+                                    / 2,
+                                    (
+                                        get_pixel_value(
+                                            last_image_pyramid,
+                                            last_image_keypoint_pyramid[0] + j,
+                                            last_image_keypoint_pyramid[1] + i + 1,
+                                        )
+                                        - get_pixel_value(
+                                            last_image_pyramid,
+                                            last_image_keypoint_pyramid[0] + j,
+                                            last_image_keypoint_pyramid[1] + i - 1,
+                                        )
+                                    )
+                                    / 2,
+                                ]
+                            ]
+                        )
+                        J_list.append(J)
+
+                        H = H + J.T @ J
+                if valid_points < half_win_size[0] * half_win_size[1] * 0.25:
+                    continue
                 for _ in range(100):
                     last_image_keypoint_pyramid = (
                         last_image_keypoint / cur_pyramid_level
@@ -77,56 +404,19 @@ class XinOpticalFlowPyrLK(object):
                     cur_point_move_pyrmid = (
                         cur_tracked_keypoint_pyramid - last_image_keypoint_pyramid
                     )
-                    H = np.zeros((2, 2))
                     b = np.zeros((2, 1))
-                    J = np.zeros((2, 1))
                     cost = 0.0
+                    J_index = -1
                     for i in range(-half_win_size[0], half_win_size[0]):
                         for j in range(-half_win_size[1], half_win_size[1]):
+                            J_index += 1
 
-                            def get_pixel_value(image, x, y) -> float:
-                                if (
-                                    x < 0
-                                    or x >= image.shape[1]
-                                    or y < 0
-                                    or y >= image.shape[0]
-                                ):
-                                    return 0.0
-                                return float(image[int(y), int(x)])
-
-                            J = -1 * np.array(
-                                [
-                                    [
-                                        (
-                                            get_pixel_value(
-                                                last_image_pyramid,
-                                                last_image_keypoint_pyramid[0] + j + 1,
-                                                last_image_keypoint_pyramid[1] + i,
-                                            )
-                                            - get_pixel_value(
-                                                last_image_pyramid,
-                                                last_image_keypoint_pyramid[0] + j - 1,
-                                                last_image_keypoint_pyramid[1] + i,
-                                            )
-                                        )
-                                        / 2,
-                                        (
-                                            get_pixel_value(
-                                                last_image_pyramid,
-                                                last_image_keypoint_pyramid[0] + j,
-                                                last_image_keypoint_pyramid[1] + i + 1,
-                                            )
-                                            - get_pixel_value(
-                                                last_image_pyramid,
-                                                last_image_keypoint_pyramid[0] + j,
-                                                last_image_keypoint_pyramid[1] + i - 1,
-                                            )
-                                        )
-                                        / 2,
-                                    ]
-                                ]
-                            )
-
+                            if not valid_point(
+                                last_image_pyramid,
+                                last_image_keypoint_pyramid[0] + j,
+                                last_image_keypoint_pyramid[1] + i,
+                            ):
+                                continue
                             error = get_pixel_value(
                                 last_image_pyramid,
                                 last_image_keypoint_pyramid[0] + j,
@@ -141,9 +431,9 @@ class XinOpticalFlowPyrLK(object):
                                 + cur_point_move_pyrmid[1],
                             )
 
+                            J = J_list[J_index]
                             b = b - J.T * error
                             cost = cost + float(error) ** 2
-                            H = H + J.T @ J
 
                     # update = inv(H) @ b
                     # using ldlt decomposition
@@ -175,7 +465,7 @@ class XinOpticalFlowPyrLK(object):
                         status = False
                         break
 
-                    if np.linalg.norm(update) < 0.1:
+                    if np.linalg.norm(update) < 1.0:
                         break
             tracked_keypoints.append(cur_tracked_keypoint)
             tracked_status.append(status)
