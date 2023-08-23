@@ -8,80 +8,45 @@
 import numpy as np
 import cv2
 
-feature_point_id = 0
-
 
 class ImageFrame(object):
     def __init__(self, image: np.ndarray, timestamp_ns: int):
-        self.__image = image
+        self.image = image
         equalize = False
         if equalize:
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            self.__gray_image = clahe.apply(image)
+            self.gray_image = clahe.apply(image)
         else:
-            self.__gray_image = image.copy()
-        self.__timestamp_ns = timestamp_ns
-        self.__keypoints = []
-        self.__keypoints_id = []
+            self.gray_image = image.copy()
+        self.timestamp_ns = timestamp_ns
+        self.keypoints = []
+        self.keypoints_id = []
 
-        self.__max_extracted_keypoints = 300
-        self.__min_keypoint_distance = 30
+        self.max_extracted_keypoints = 150
+        self.min_keypoint_distance = 30
 
     def get_timestamp_ns(self):
-        return self.__timestamp_ns
+        return self.timestamp_ns
 
     def get_image(self):
-        return self.__image
+        return self.image
 
     def get_gray_image(self):
-        return self.__gray_image
+        return self.gray_image
 
     def get_keypoints(self):
-        return self.__keypoints
+        return self.keypoints
 
     def get_keypoints_id(self):
-        return self.__keypoints_id
-
-    def fill_keypoints(self):
-        cur_extracted_keypoints = self.__max_extracted_keypoints - len(self.__keypoints)
-
-        if cur_extracted_keypoints <= 10:
-            return
-
-        mask = np.ones_like(self.__gray_image)
-        for keypoint in self.__keypoints:
-            cv2.circle(
-                mask,
-                [int(keypoint[0]), int(keypoint[1])],
-                self.__min_keypoint_distance,
-                0,
-                -1,
-            )
-
-        points = cv2.goodFeaturesToTrack(
-            self.__gray_image,
-            maxCorners=cur_extracted_keypoints,
-            qualityLevel=0.01,
-            minDistance=self.__min_keypoint_distance,
-            mask=mask,
-        )
-
-        # cv2.imshow("mask", mask * 255)
-        if points is None:
-            return
-        for point in points:
-            self.__keypoints.append(point[0])
-            global feature_point_id
-            self.__keypoints_id.append(feature_point_id)
-            feature_point_id += 1
+        return self.keypoints_id
 
     def get_matching_index(
         self,
         other_image: "ImageFrame",
     ):
         id_map = {}
-        for i in range(len(self.__keypoints_id)):
-            id_map[self.__keypoints_id[i]] = i
+        for i in range(len(self.keypoints_id)):
+            id_map[self.keypoints_id[i]] = i
 
         matching_pairs = []
         matching_pairs_id = []
@@ -108,12 +73,12 @@ class ImageFrame(object):
         matching_cur_keypoints = []
         matching_last_keypoints = []
         for pair in matching_pairs:
-            matching_cur_keypoints.append(self.__keypoints[pair[0]])
+            matching_cur_keypoints.append(self.keypoints[pair[0]])
             matching_last_keypoints.append(last_image_keypoints[pair[1]])
 
         if len(matching_cur_keypoints) < 8:
-            self.__keypoints = []
-            self.__keypoints_id = []
+            self.keypoints = []
+            self.keypoints_id = []
             return
 
         F, mask = cv2.findFundamentalMat(
@@ -123,88 +88,37 @@ class ImageFrame(object):
             ransacReprojThreshold=4.0,
         )
         # print("tracking inliers: ", np.sum(mask))
-        # print("keypoints before filter: ", len(self.__keypoints))
-        self.__keypoints = []
-        self.__keypoints_id = []
+        # print("keypoints before filter: ", len(self.keypoints))
+        self.keypoints = []
+        self.keypoints_id = []
         for i in range(len(mask)):
             if mask[i] != 0:
-                self.__keypoints.append(matching_cur_keypoints[i])
-                self.__keypoints_id.append(matching_pairs_id[i])
-        # print("keypoints after filter: ", len(self.__keypoints))
-
-    def track_keypoints(
-        self,
-        last_image: "ImageFrame",
-    ):
-        self.__keypoints = []
-        self.__keypoints_id = []
-
-        last_image_keypoints = last_image.get_keypoints()
-        last_image_keypoints_id = last_image.get_keypoints_id()
-        if len(last_image_keypoints) == 0:
-            return
-
-        points, status, error = cv2.calcOpticalFlowPyrLK(
-            last_image.get_gray_image(),
-            self.__image,
-            np.array(last_image_keypoints, dtype=np.float32),
-            None,
-            winSize=(21, 21),
-            maxLevel=8,
-            criteria=(
-                cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
-                100,
-                0.01,
-            ),
-        )
-
-        for i in range(len(points)):
-            if status[i] == 0:
-                continue
-            self.__keypoints.append(points[i])
-            self.__keypoints_id.append(last_image_keypoints_id[i])
+                self.keypoints.append(matching_cur_keypoints[i])
+                self.keypoints_id.append(matching_pairs_id[i])
+        # print("keypoints after filter: ", len(self.keypoints))
 
 
 class BaseTracker(object):
     def __init__(self, config):
         self.__config = config
 
-        self.__current_image = None
-        self.__last_image = None
-        self.__last_pub_image = None
+        self.current_image = None
+        self.last_image = None
+        self.last_pub_image = None
 
-        self.__tracking_result = None
+        self.tracking_result = None
+
+        self.feature_point_id = 0
 
     def process_image(
         self,
         image: np.ndarray,
         timestamp: int,
     ):
-        self.__current_image = ImageFrame(image, timestamp)
-
-        if self.__last_image is None:
-            self.__current_image.fill_keypoints()
-            self.__last_image = self.__current_image
-            self.__last_pub_image = self.__current_image
-            return False
-
-        self.__current_image.track_keypoints(self.__last_image)
-
-        if self.check_pub_time(timestamp):
-            self.__current_image.filter_track_keypoints(self.__last_pub_image)
-            self.__current_image.fill_keypoints()
-            self.plot_tracking_result()
-            self.__last_image = self.__current_image
-            self.__last_pub_image = self.__current_image
-            return True
-
-        else:
-            self.__last_image = self.__current_image
-            return False
+        pass
 
     def check_pub_time(self, timestamp):
-        delta_time = timestamp - self.__last_pub_image.get_timestamp_ns()
-        # print("delta_time: ", delta_time / 1e9)
+        delta_time = timestamp - self.last_pub_image.get_timestamp_ns()
         process_time_pub = 1.0 / 10
         if delta_time / 1e9 >= process_time_pub:
             return True
@@ -212,27 +126,37 @@ class BaseTracker(object):
             return False
 
     def plot_tracking_result(self):
-        show_image = self.__current_image.get_image().copy()
+        show_image = self.current_image.get_image().copy()
         show_image = cv2.cvtColor(show_image, cv2.COLOR_GRAY2BGR)
-        current_keypoints = self.__current_image.get_keypoints()
-        current_keypoints_id = self.__current_image.get_keypoints_id()
-        cur_id_key_map = {}
+        current_keypoints = self.current_image.get_keypoints()
+        # current_keypoints_id = self.current_image.get_keypoints_id()
+        # cur_id_key_map = {}
 
-        for i in range(len(current_keypoints)):
+        # for i in range(len(current_keypoints)):
+        #     cv2.circle(
+        #         show_image,
+        #         [int(current_keypoints[i][0]), int(current_keypoints[i][1])],
+        #         3,
+        #         (0, 0, 255),
+        #         -1,
+        #     )
+        #     cur_id_key_map[i] = current_keypoints_id[i]
+
+        matching_pairs, matching_pairs_id = self.current_image.get_matching_index(
+            self.last_pub_image
+        )
+        last_keypoints = self.last_pub_image.get_keypoints()
+        for pair in matching_pairs:
             cv2.circle(
                 show_image,
-                [int(current_keypoints[i][0]), int(current_keypoints[i][1])],
+                [
+                    int(current_keypoints[pair[0]][0]),
+                    int(current_keypoints[pair[0]][1]),
+                ],
                 3,
                 (0, 0, 255),
                 -1,
             )
-            cur_id_key_map[i] = current_keypoints_id[i]
-
-        matching_pairs, matching_pairs_id = self.__current_image.get_matching_index(
-            self.__last_pub_image
-        )
-        last_keypoints = self.__last_pub_image.get_keypoints()
-        for pair in matching_pairs:
             cv2.line(
                 show_image,
                 [
@@ -246,18 +170,18 @@ class BaseTracker(object):
                 (255, 0, 0),
                 1,
             )
-            cv2.putText(
-                show_image,
-                "{}".format(cur_id_key_map[pair[0]]),
-                (
-                    int(current_keypoints[pair[0]][0]),
-                    int(current_keypoints[pair[0]][1]),
-                ),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                1,
-            )
+            # cv2.putText(
+            #     show_image,
+            #     "{}".format(cur_id_key_map[pair[0]]),
+            #     (
+            #         int(current_keypoints[pair[0]][0]),
+            #         int(current_keypoints[pair[0]][1]),
+            #     ),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     0.5,
+            #     (0, 255, 0),
+            #     1,
+            # )
         tracking_num = len(matching_pairs)
 
         cv2.putText(
@@ -270,13 +194,7 @@ class BaseTracker(object):
             2,
         )
 
-        self.__tracking_result = show_image
+        self.tracking_result = show_image
 
     def show_current_frame(self):
-        return self.__tracking_result
-
-
-class LKTracker(BaseTracker):
-    def __init__(self, config):
-        super(LKTracker, self).__init__(config)
-        pass
+        return self.tracking_result

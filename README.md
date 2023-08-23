@@ -6,7 +6,9 @@ This project is a toy to show how different deep-learning feature matching metho
 
 ## ---
 ### 1. LK optical flow
-[![tracking results of lk](doc/lk.gif)](doc/lk.gif)
+[![tracking results of lk](doc/output_lk.gif)](doc/output_lk.gif)
+
+[![tracking results of loftr](doc/output_loftr.gif)](doc/output_loftr.gif)
 
 ### 2. [SuperPoint]() + [SuperGlue]()
 
